@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["lambda-core", "qwen-lambda"]
+
+# Match the perf profile the candle kernels were tuned under. codegen-units=1 +
+# thin LTO lets the NEON/SDOT dot kernels inline across the matmul boundary.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

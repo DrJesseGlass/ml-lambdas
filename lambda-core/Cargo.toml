@@ -1,0 +1,16 @@
+[package]
+name = "lambda-core"
+version = "0.1.0"
+edition = "2021"
+
+# Model-agnostic serving harness shared by every model lambda: request/response
+# types, the warm-engine lifecycle, thread-pinning, and the Lambda runtime glue.
+# Intentionally has NO ML dependency — models implement the `TextModel` trait.
+[dependencies]
+lambda_runtime = "0.13"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json"] }

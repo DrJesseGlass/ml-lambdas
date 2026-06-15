@@ -1,0 +1,16 @@
+[package]
+name = "qwen-lambda"
+version = "0.1.0"
+edition = "2021"
+
+# Thin consumer: the serving harness comes from lambda-core; this crate only adds
+# the Qwen3 model. The candle dep pins the perf branch by git ref so this repo
+# stays decoupled from the fork's source tree — repoint `branch` as the
+# optimization work is split into smaller branches.
+[dependencies]
+lambda-core = { path = "../lambda-core" }
+candle = { git = "https://github.com/DrJesseGlass/candle.git", branch = "QK_4_GEMV", package = "candle-core" }
+candle-transformers = { git = "https://github.com/DrJesseGlass/candle.git", branch = "QK_4_GEMV" }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow = "1"
