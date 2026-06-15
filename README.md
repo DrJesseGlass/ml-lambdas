@@ -77,17 +77,44 @@ oversubscribe and thrash. **Always set `CANDLE_QMATMUL_DECODE_THREADS` and
 
 ## Benchmarking
 
-Target is **minimum cost/token**, not max tok/s — a bigger tier isn't wasteful if
-the extra vCPUs buy proportional speedup. Prefill (compute-bound) scales with
-vCPUs; decode (bandwidth-bound) plateaus early, so the sweet-spot tier differs by
-workload.
+Two layers, because they answer different questions.
+
+### 1. Parity vs llama.cpp — `bench/compare.sh` (EC2 Graviton2)
+
+The head-to-head. Runs both engines on the **same box, same GGUF, pinned to the
+same physical cores** with `taskset`, and measures prefill (pp) + decode (tg)
+tok/s and peak RSS. This is the fast iteration loop — re-run after each candle
+change without a deploy cycle. Matched to `llama-bench` methodology via the
+`quantized-qwen3-bench` candle example (dummy-token prefill, greedy decode, N
+reps, median) so the numbers are comparable.
+
+```bash
+MODEL=~/ml-lambdas/qwen-lambda/models/Qwen3-0.6B-Q4_K_M.gguf \
+CANDLE_DIR=~/candle LLAMA_BENCH=~/llama.cpp/build/bin/llama-bench \
+CORES="2 4" ./bench/compare.sh
+```
+
+Prints, per core count, a candle / llama.cpp / `ratio c/l` row. `taskset -c
+0-1` + `*_THREADS=2` simulates a 2-vCPU tier; sweep `CORES` to cover the tiers.
+Caveat: this is a faithful *relative* result and approximate absolute — EC2
+dedicated cores ≠ Lambda's CFS-quota vCPU, so cost/token still comes from layer 2.
+
+### 2. Cost/token — `bench/sweep.sh` (real Lambda)
+
+The production truth. Target is **minimum cost/token**, not max tok/s — a bigger
+tier isn't wasteful if the extra vCPUs buy proportional speedup. Prefill scales
+with vCPUs; decode (bandwidth-bound) plateaus early, so the sweet-spot tier
+differs by workload. Only Lambda gives real cost/token and cold-start (microVM,
+CFS throttling, tiered vCPU).
 
 ```bash
 FN=qwen-lambda ./bench/sweep.sh
 ```
 
-Compare the chosen operating point against `llama.cpp` at the **same tier and
-thread count**, same GGUF.
+### Workflow
+
+Iterate candle + run `compare.sh` on EC2 until the parity ratio is where you want
+it, then deploy and run `sweep.sh` for the cost/token verdict at the chosen tier.
 
 ## Notes
 
