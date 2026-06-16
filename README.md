@@ -83,7 +83,20 @@ Two layers, because they answer different questions.
 
 The head-to-head. Runs both engines on the **same box, same GGUF, pinned to the
 same physical cores** with `taskset`, and measures prefill (pp) + decode (tg)
-tok/s and peak RSS. This is the fast iteration loop — re-run after each candle
+tok/s and peak RSS.
+
+**First, provision the box.** On a fresh arm64 EC2 instance (Amazon Linux 2023
+or Ubuntu) with this repo checked out, `bench/ec2_setup.sh` is one command from a
+result: it installs build deps + Rust, clones the candle fork at `QK_4_GEMV`,
+clones and builds `llama.cpp` (`cmake -B build -DCMAKE_BUILD_TYPE=Release &&
+cmake --build build -j`), verifies the GGUF is in place (fetching it only if
+absent), then prints the exact `compare.sh` invocation with paths filled in.
+It's idempotent — re-run it to pull + rebuild candle after each change.
+
+```bash
+./bench/ec2_setup.sh
+```
+ This is the fast iteration loop — re-run after each candle
 change without a deploy cycle. Matched to `llama-bench` methodology via the
 `quantized-qwen3-bench` candle example (dummy-token prefill, greedy decode, N
 reps, median) so the numbers are comparable.
