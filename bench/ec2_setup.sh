@@ -65,6 +65,19 @@ command -v taskset >/dev/null 2>&1 || {
 command -v curl >/dev/null 2>&1 || {
   echo "curl not found — needed for rustup and model fetch." >&2; exit 1; }
 
+# --- 1b. swap safety net --------------------------------------------------
+# AL2023 ships with NO swap. The parallel C++ build below peaks hard (each
+# cc1plus can want ~2 GB); on a 15 GB box -j8 OOM-kills the compilers and
+# thrashes sshd to death. A swapfile turns a hard OOM into (worst case) slow
+# progress. Idempotent — skip if any swap is already on.
+if [ "$(swapon --show=NAME --noheadings | wc -l)" -eq 0 ]; then
+  say "No swap present — adding an 8G swapfile"
+  sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=none
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
+fi
+
 # --- 2. Rust toolchain ----------------------------------------------------
 if ! command -v cargo >/dev/null 2>&1; then
   say "Installing Rust (rustup)"
@@ -100,9 +113,14 @@ else
   git clone "$LLAMA_REPO" "$LLAMA_DIR"
 fi
 
-say "Building llama.cpp (Release)"
+say "Building llama.cpp (Release, llama-bench target)"
 cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DCMAKE_BUILD_TYPE=Release
-cmake --build "$LLAMA_DIR/build" -j
+# Cap parallelism (each cc1plus can need ~2 GB) and build ONLY the target we use.
+# Default `-j` == all cores, which is what OOM-bombed the 15 GB box; 4 keeps peak
+# memory sane while staying fast. Override with LLAMA_JOBS on a bigger box.
+LLAMA_JOBS="${LLAMA_JOBS:-$(nproc)}"
+[ "$LLAMA_JOBS" -gt 4 ] && LLAMA_JOBS=4
+cmake --build "$LLAMA_DIR/build" -j "$LLAMA_JOBS" --target llama-bench
 
 LLAMA_BENCH="$LLAMA_DIR/build/bin/llama-bench"
 [ -x "$LLAMA_BENCH" ] || {
