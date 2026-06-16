@@ -39,10 +39,15 @@ say() { printf '\n=== %s ===\n' "$*"; }
 if [ "${SKIP_DEPS:-0}" != "1" ]; then
   say "Installing build deps"
   if command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y git cmake gcc gcc-c++ make jq bc curl util-linux
+    # NB: don't request `curl` here — AL2023 ships `curl-minimal`, which provides
+    # the curl command and *conflicts* with the full `curl` package (dnf aborts).
+    # openssl-devel + pkgconf: the candle example's openssl-sys dep needs them.
+    sudo dnf install -y git cmake gcc gcc-c++ make jq bc util-linux \
+                        openssl-devel pkgconf-pkg-config
   elif command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
-    sudo apt-get install -y git cmake build-essential jq bc curl util-linux
+    sudo apt-get install -y git cmake build-essential jq bc curl util-linux \
+                            libssl-dev pkg-config
   else
     echo "No supported package manager (dnf/apt-get) found; install git cmake" \
          "a C/C++ toolchain, jq, bc, curl, and taskset manually." >&2
@@ -55,6 +60,10 @@ fi
 # taskset (util-linux) is what makes the core-pinning in compare.sh work.
 command -v taskset >/dev/null 2>&1 || {
   echo "taskset not found after install — compare.sh needs it." >&2; exit 1; }
+# curl is needed for rustup + fetch_model.sh (preinstalled on AL2023, may not be
+# on a minimal Ubuntu — apt installs it above).
+command -v curl >/dev/null 2>&1 || {
+  echo "curl not found — needed for rustup and model fetch." >&2; exit 1; }
 
 # --- 2. Rust toolchain ----------------------------------------------------
 if ! command -v cargo >/dev/null 2>&1; then
