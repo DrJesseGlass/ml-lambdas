@@ -64,8 +64,13 @@ for c in $CORES; do
   l_rss=$(run_with_rss "$tl" \
     taskset -c "$cpus" "$LLAMA_BENCH" \
     -m "$MODEL" -t "$c" -p "$PP" -n "$TG" -r "$REPS" -o json)
-  l_pp=$(jq -r '[.[]|select(.n_gen==0)][0].avg_ts' "$tl")
-  l_tg=$(jq -r '[.[]|select(.n_prompt==0)][0].avg_ts' "$tl")
+  # llama-bench's avg_ts is the *mean* over reps; the candle side reports the
+  # median (.*_median) and the README calls this a median run. Take the median of
+  # llama-bench's per-rep samples_ts so both sides use the same statistic and one
+  # noisy rep can't skew only the denominator of the ratio.
+  l_med='def med: sort | if length==0 then "nan" elif length%2==1 then .[length/2|floor] else (.[length/2-1]+.[length/2])/2 end;'
+  l_pp=$(jq -r "$l_med"'[.[]|select(.n_gen==0)][0].samples_ts | med' "$tl")
+  l_tg=$(jq -r "$l_med"'[.[]|select(.n_prompt==0)][0].samples_ts | med' "$tl")
 
   printf '%-6s %-10s %-12.2f %-12.2f %-10.1f\n' "$c" candle    "$c_pp" "$c_tg" "$(echo "$c_rss/1024" | bc -l)"
   printf '%-6s %-10s %-12.2f %-12.2f %-10.1f\n' "$c" llama.cpp "$l_pp" "$l_tg" "$(echo "$l_rss/1024" | bc -l)"
