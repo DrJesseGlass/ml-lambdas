@@ -7,10 +7,15 @@ edition = "2021"
 # the Qwen3 model. The candle dep pins the perf branch by git ref so this repo
 # stays decoupled from the fork's source tree — repoint `branch` as the
 # optimization work is split into smaller branches.
+#
+# NOTE: `fused-int8-gemm` carries the deploy stack (GgmlDType::Q4Kx8 packed format +
+# loader, gguf-requant --pack, lm_head requant, CANDLE_KV_PREALLOC, packed default
+# off). It must be PUSHED to the fork before `cargo build` here resolves it. The
+# packed Q4packed.gguf can ONLY be loaded by a candle build from this branch.
 [dependencies]
 lambda-core = { path = "../lambda-core" }
-candle = { git = "https://github.com/DrJesseGlass/candle.git", branch = "QK_4_GEMV", package = "candle-core" }
-candle-transformers = { git = "https://github.com/DrJesseGlass/candle.git", branch = "QK_4_GEMV" }
+candle = { git = "https://github.com/DrJesseGlass/candle.git", branch = "fused-int8-gemm", package = "candle-core" }
+candle-transformers = { git = "https://github.com/DrJesseGlass/candle.git", branch = "fused-int8-gemm" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 anyhow = "1"

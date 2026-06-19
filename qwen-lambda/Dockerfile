@@ -33,9 +33,23 @@ RUN cargo build --release -p qwen-lambda && cp target/release/qwen-lambda /boots
 # ---- Runtime ----------------------------------------------------------------
 FROM ${RUNTIME_BASE}
 # Bake the model + tokenizer into the image (no cold-start download).
-COPY qwen-lambda/models/Qwen3-0.6B-Q4_K_M.gguf /opt/model/Qwen3-0.6B-Q4_K_M.gguf
+#
+# MODEL_FILE selects the baked GGUF (default = the candle-packed deploy artifact,
+# produced by `./pack_model.sh` BEFORE this build):
+#   Qwen3-0.6B-Q4packed.gguf  -> pre-packed Q4Kx8, single RAM copy, no runtime
+#                                repack, ~16% faster 1-vCPU decode than llama.cpp.
+#   Qwen3-0.6B-Q4out.gguf     -> standard/portable Q4_K (set CANDLE_MATMUL_PACKED_Q4K=1
+#                                to runtime-pack at the +~250MB memory cost).
+ARG MODEL_FILE=Qwen3-0.6B-Q4packed.gguf
+COPY qwen-lambda/models/${MODEL_FILE} /opt/model/model.gguf
 COPY qwen-lambda/models/tokenizer.json /opt/model/tokenizer.json
-ENV MODEL_PATH=/opt/model/Qwen3-0.6B-Q4_K_M.gguf \
-    TOKENIZER_PATH=/opt/model/tokenizer.json
+ENV MODEL_PATH=/opt/model/model.gguf \
+    TOKENIZER_PATH=/opt/model/tokenizer.json \
+    # KV cache initial prealloc per layer (the cache grows on demand). Size to the
+    # task's max context to cut idle RAM (~0.11 MB/position): 512=58MB, 256=29MB,
+    # 128=15MB vs the 1024 default's 117MB. Override per Lambda function as needed.
+    CANDLE_KV_PREALLOC=512
+# candle's quantized matmul pools auto-size to the Lambda's allocated vCPUs
+# (std::thread::available_parallelism), so no thread env is required.
 # The custom-runtime base executes /var/runtime/bootstrap.
 COPY --from=builder /bootstrap /var/runtime/bootstrap
