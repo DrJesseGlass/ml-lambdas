@@ -1,4 +1,7 @@
-/target
+**/target
 # Model artifacts are large; fetch them with <crate>/fetch_model.sh, don't commit.
 **/models/*.gguf
 **/models/*.json
+**/.DS_Store
+# Raw benchmark run logs; the harness scripts are tracked, the outputs are not.
+bench/n1_runs/

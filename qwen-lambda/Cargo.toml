@@ -5,13 +5,21 @@ edition = "2021"
 
 # Thin consumer: the serving harness comes from lambda-core; this crate only adds
 # the Qwen3 model. The candle dep pins the perf branch by git ref so this repo
-# stays decoupled from the fork's source tree — repoint `branch` as the
+# stays decoupled from the fork's source tree - repoint `branch` as the
 # optimization work is split into smaller branches.
 #
 # NOTE: `fused-int8-gemm` carries the deploy stack (GgmlDType::Q4Kx8 packed format +
 # loader, gguf-requant --pack, lm_head requant, CANDLE_KV_PREALLOC, packed default
 # off). It must be PUSHED to the fork before `cargo build` here resolves it. The
 # packed Q4packed.gguf can ONLY be loaded by a candle build from this branch.
+#
+# WHEN REPOINTING to the decomposed stack (lambda-optimized/bench-suite et al.):
+# fused-int8-gemm's candle-nn defaults `f16-attn-dot` ON; the decomposed candle-nn
+# defaults it OFF (A2 made it opt-in for upstream bit-exactness). It is worth ~+4.5%
+# N1 decode (verified 2026-06-20; ~1e-3 non-exact on the attention dot). To keep it,
+# add a direct candle-nn dep with the feature, e.g.:
+#   candle-nn = { git = "...DrJesseGlass/candle.git", branch = "<stack>", features = ["f16-attn-dot"] }
+# This is a build-flag decision only - no candle code change.
 [dependencies]
 lambda-core = { path = "../lambda-core" }
 candle = { git = "https://github.com/DrJesseGlass/candle.git", branch = "fused-int8-gemm", package = "candle-core" }

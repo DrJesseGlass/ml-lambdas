@@ -36,9 +36,16 @@ impl Engine {
         let device = Device::Cpu;
         let mut file = std::fs::File::open(model_path)
             .map_err(|e| anyhow!("open {}: {e}", model_path.display()))?;
+        let t_read = Instant::now();
         let content =
             gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
+        let gguf_read_ms = t_read.elapsed().as_millis();
+        let t_build = Instant::now();
         let model = Qwen3::from_gguf(content, &mut file, &device)?;
+        let model_build_ms = t_build.elapsed().as_millis();
+        // Cold-start load breakdown (greppable in CloudWatch): read = GGUF bytes
+        // into RAM, build = QTensor construction. Tells us which half to attack.
+        eprintln!("COLDSTART gguf_read_ms={gguf_read_ms} model_build_ms={model_build_ms}");
         let tokenizer =
             Tokenizer::from_file(tokenizer_path).map_err(anyhow::Error::msg)?;
         let eos_token = *tokenizer

@@ -53,6 +53,7 @@ pub type Loader = fn() -> anyhow::Result<Box<dyn TextModel>>;
 static ENGINE: OnceLock<Mutex<Box<dyn TextModel>>> = OnceLock::new();
 static FIRST_INVOCATION: AtomicBool = AtomicBool::new(true);
 static LOAD_MS: AtomicU64 = AtomicU64::new(0);
+static WARMUP_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Read a filesystem path from `var`, falling back to `default`. Lets each model
 /// keep a sensible local-dev default while the container overrides via env.
@@ -102,13 +103,38 @@ struct Response {
     cold_start: bool,
     /// Model load time in ms (0 on warm invocations).
     load_ms: u64,
+    /// Init warmup (dummy forward) time in ms (0 on warm invocations).
+    warmup_ms: u64,
 }
 
 fn warm(loader: Loader) {
     ENGINE.get_or_init(|| {
         let t = Instant::now();
-        let model = loader().expect("failed to load model");
-        LOAD_MS.store(t.elapsed().as_millis() as u64, Ordering::Relaxed);
+        let mut model = loader().expect("failed to load model");
+        let load_ms = t.elapsed().as_millis() as u64;
+        LOAD_MS.store(load_ms, Ordering::Relaxed);
+
+        // Warm forward during init: a 1-token dummy generation pays the one-time
+        // costs here (KV alloc, any runtime weight repack, weight page-faults), so
+        // the first real request gets warm-path latency instead of a cold spike.
+        let tw = Instant::now();
+        let warmup_req = GenRequest {
+            prompt: "warmup".to_string(),
+            max_tokens: 1,
+            temperature: 0.0,
+            top_p: None,
+            top_k: None,
+            seed: 0,
+            repeat_penalty: 1.0,
+            repeat_last_n: 0,
+        };
+        if let Err(e) = model.generate(&warmup_req) {
+            tracing::warn!("warmup generate failed: {e:#}");
+        }
+        let warmup_ms = tw.elapsed().as_millis() as u64;
+        WARMUP_MS.store(warmup_ms, Ordering::Relaxed);
+        tracing::info!(load_ms, warmup_ms, "cold-start init complete");
+
         Mutex::new(model)
     });
 }
@@ -147,6 +173,11 @@ async fn handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
         cold_start,
         load_ms: if cold_start {
             LOAD_MS.load(Ordering::Relaxed)
+        } else {
+            0
+        },
+        warmup_ms: if cold_start {
+            WARMUP_MS.load(Ordering::Relaxed)
         } else {
             0
         },

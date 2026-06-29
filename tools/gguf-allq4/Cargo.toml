@@ -1,0 +1,18 @@
+# Standalone host-side tool: requant a GGUF's Q6_K/Q5_K weights down to Q4_K
+# (norms passed through), producing an all-Q4_K model for the wasm browser build.
+# Own [workspace] table so it is NOT pulled into the parent ml-lambdas workspace
+# (which pins candle by git ref); this one builds against the local candle tree.
+[workspace]
+
+[package]
+name = "gguf-allq4"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gguf-allq4"
+path = "src/main.rs"
+
+[dependencies]
+candle = { path = "../../../candle/candle-core", package = "candle-core" }
+anyhow = "1"
