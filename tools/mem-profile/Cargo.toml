@@ -1,0 +1,21 @@
+# Native heap profiler for the quantized Qwen3 forward path. The CPU forward
+# allocates the same tensors as the wasm build, so peak heap here mirrors the
+# wasm linear-memory high-water mark. Own [workspace] to stay out of the parent.
+[workspace]
+
+[package]
+name = "mem-profile"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mem-profile"
+path = "src/main.rs"
+
+[dependencies]
+candle = { path = "../../../candle/candle-core", package = "candle-core" }
+candle-transformers = { path = "../../../candle/candle-transformers" }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3

@@ -2,6 +2,128 @@ use anyhow::Result;
 use candle::quantized::{gguf_file, GgmlDType, QTensor};
 use candle::Device;
 use std::collections::HashMap;
+use std::io::Cursor;
+
+// Heap tracker so --profile can report peak vs steady-state allocation, mirroring
+// the wasm load where the input buffer and the built QTensors coexist.
+mod track {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CURRENT: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct Tracking;
+    unsafe impl GlobalAlloc for Tracking {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            let p = System.alloc(l);
+            if !p.is_null() {
+                let c = CURRENT.fetch_add(l.size(), Ordering::Relaxed) + l.size();
+                PEAK.fetch_max(c, Ordering::Relaxed);
+            }
+            p
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            System.dealloc(p, l);
+            CURRENT.fetch_sub(l.size(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn current_mb() -> f64 {
+        CURRENT.load(Ordering::Relaxed) as f64 / 1_048_576.0
+    }
+    pub fn peak_mb() -> f64 {
+        PEAK.load(Ordering::Relaxed) as f64 / 1_048_576.0
+    }
+}
+
+#[global_allocator]
+static ALLOC: track::Tracking = track::Tracking;
+
+fn profile(input: &str) -> Result<()> {
+    let buf = std::fs::read(input)?;
+    let file_mb = buf.len() as f64 / 1_048_576.0;
+    println!(
+        "gguf read into buffer: {file_mb:.1} MB (heap now {:.1} MB)",
+        track::current_mb()
+    );
+
+    let mut cursor = Cursor::new(&buf[..]);
+    let content = gguf_file::Content::read(&mut cursor).map_err(|e| e.with_path(input))?;
+
+    // Build every QTensor while the input buffer is still alive -- this is the
+    // exact coexistence that drives the wasm peak.
+    let mut tensors: Vec<QTensor> = Vec::with_capacity(content.tensor_infos.len());
+    let device = Device::Cpu;
+    for name in content.tensor_infos.keys() {
+        tensors.push(content.tensor(&mut cursor, name, &device)?);
+    }
+    let peak = track::peak_mb();
+    let with_buffer = track::current_mb();
+    println!("after building all QTensors (buffer + QTensors alive):");
+    println!("  current heap: {with_buffer:.1} MB   peak: {peak:.1} MB");
+
+    drop(buf);
+    let steady = track::current_mb();
+    println!("after dropping input buffer (QTensors only): {steady:.1} MB");
+    println!(
+        "=> input buffer held {file_mb:.1} MB on top of {steady:.1} MB of QTensors; \
+         peak doubling ~= {:.1} MB",
+        with_buffer - steady
+    );
+
+    // Streamability: is the file laid out in the order from_gguf reads tensors?
+    let mut by_offset: Vec<(&str, u64)> = content
+        .tensor_infos
+        .iter()
+        .map(|(n, i)| (n.as_str(), i.offset))
+        .collect();
+    by_offset.sort_by_key(|(_, off)| *off);
+    println!("\nfirst 12 tensors in FILE-OFFSET order:");
+    for (n, off) in by_offset.iter().take(12) {
+        println!("  {off:>12}  {n}");
+    }
+    let embd_pos = by_offset
+        .iter()
+        .position(|(n, _)| *n == "token_embd.weight");
+    println!(
+        "token_embd.weight is at file-order index {embd_pos:?} of {}",
+        by_offset.len()
+    );
+    std::hint::black_box(&tensors);
+    Ok(())
+}
+
+// Streaming load: read tensors in file-offset order straight from a File reader
+// (no full in-memory buffer), mirroring building QTensors from a network stream
+// as bytes arrive. Peak should be ~= the QTensors alone plus one in-flight tensor.
+fn profile_stream(input: &str) -> Result<()> {
+    let mut f = std::fs::File::open(input)?;
+    let content = gguf_file::Content::read(&mut f).map_err(|e| e.with_path(input))?;
+    println!(
+        "header parsed from File (heap now {:.1} MB)",
+        track::current_mb()
+    );
+
+    let mut by_offset: Vec<&str> = content.tensor_infos.keys().map(|s| s.as_str()).collect();
+    by_offset.sort_by_key(|n| content.tensor_infos[*n].offset);
+
+    let device = Device::Cpu;
+    let mut tensors: HashMap<String, QTensor> = HashMap::with_capacity(by_offset.len());
+    for name in by_offset {
+        let qt = content.tensor(&mut f, name, &device)?;
+        tensors.insert(name.to_string(), qt);
+    }
+    println!("after streaming all QTensors from File (offset order):");
+    println!(
+        "  current heap: {:.1} MB   peak: {:.1} MB",
+        track::current_mb(),
+        track::peak_mb()
+    );
+    println!("(no 325 MB input buffer was ever held -- this is the streaming target)");
+    std::hint::black_box(&tensors);
+    Ok(())
+}
 
 fn load_gguf(path: &str) -> Result<gguf_file::Content> {
     let mut f = std::fs::File::open(path)?;
@@ -39,6 +161,12 @@ fn dump(input: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "--profile" {
+        return profile(&args[2]);
+    }
+    if args.len() == 3 && args[1] == "--profile-stream" {
+        return profile_stream(&args[2]);
+    }
     if args.len() == 2 {
         return dump(&args[1]);
     }
