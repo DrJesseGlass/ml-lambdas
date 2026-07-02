@@ -33,7 +33,7 @@ declare -A PPV TGV
 
 echo "=== FULL-STACK BENCH  host=$(hostname)  $(nproc) vCPU  pp=$PP tg=$TG reps=$REPS  threads=$THREADS ==="
 echo "## building model-core (bench + gguf-requant, native + f16-attn-dot) ..."
-if ! ( cd "$CD" && git checkout -q lambda-optimized/model-core && RUSTFLAGS="-C target-cpu=native" \
+if ! ( cd "$CD" && git checkout -q model-core-ext && RUSTFLAGS="-C target-cpu=native" \
        cargo build --release --example quantized-qwen3-bench --example gguf-requant \
        --features candle-nn/f16-attn-dot ); then
   echo "   model-core BUILD FAILED"; exit 1
@@ -60,9 +60,36 @@ cand() { # label model env
         --reps "$REPS" --warmup 1 --json)
     PPV[$label,$t]=$(jget "$out" pp_tok_s_median)
     TGV[$label,$t]=$(jget "$out" tg_tok_s_median)
-    printf '   %-14s t=%s  pp=%-8s tg=%-8s\n' "$label" "$t" "${PPV[$label,$t]}" "${TGV[$label,$t]}"
+    local rd bd; rd=$(jget "$out" gguf_read_ms); bd=$(jget "$out" model_build_ms)
+    printf '   %-14s t=%s  pp=%-8s tg=%-8s  load: read=%sms build=%sms\n' \
+      "$label" "$t" "${PPV[$label,$t]}" "${TGV[$label,$t]}" "$rd" "$bd"
   done
 }
+
+# Boot A/B: sequential vs parallel weight load on the deploy artifact, COLD (drop
+# page cache before each load so the read cost is real) and with peak RSS. Parallel
+# load reads/constructs every tensor across the rayon pool; this is where the cold
+# I/O latency (vs warm bandwidth) win shows up, at no RSS or quality cost.
+dropcache() { command -v sudo >/dev/null 2>&1 && sudo sh -c 'sync; echo 3 >/proc/sys/vm/drop_caches' 2>/dev/null; }
+bootab() { # model t
+  local model=$1 t=${2:-6}
+  [ -f "$model" ] || { echo "   (bootab: no model $model)"; return; }
+  command -v /usr/bin/time >/dev/null 2>&1 || { echo "   (bootab: no /usr/bin/time)"; return; }
+  for mode in seq par; do
+    local flag=""; [ "$mode" = par ] && flag="--parallel"
+    dropcache
+    local out rss rd bd
+    out=$(env RAYON_NUM_THREADS=$t CANDLE_NUM_THREADS=$t CANDLE_KV_PREALLOC=512 \
+        taskset -c "0-$((t-1))" /usr/bin/time -v "$BIN" --model "$model" \
+        --pp "$PP" --tg "$TG" --reps 1 --warmup 1 $flag --json 2>/tmp/bootab_$mode.err)
+    rss=$(sed -nE 's/.*Maximum resident set size \(kbytes\): ([0-9]+).*/\1/p' /tmp/bootab_$mode.err)
+    rd=$(jget "$out" gguf_read_ms); bd=$(jget "$out" model_build_ms)
+    printf '   boot[%-3s] t=%s  read=%sms build=%sms  peakRSS=%sMB\n' \
+      "$mode" "$t" "$rd" "$bd" "$(( ${rss:-0} / 1024 ))"
+  done
+}
+echo "## BOOT A/B (Q6packed-mc, cold cache, sequential vs parallel load) ..."
+bootab "$Q6MC" "$(echo "$THREADS" | awk '{print $NF}')"
 
 echo "## model-core (Q6packed-mc, full deploy stack) ..."
 cand model-core "$Q6MC" ""
